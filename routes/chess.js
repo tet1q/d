@@ -1,127 +1,329 @@
-const express = require('express');
+                    const express = require('express');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const router = express.Router();
 
-// Determine Stockfish path based on platform
+// Determine Stockfish path - compatible dengan Vercel
 function getStockfishPath() {
+  // Cek environment Vercel
+  if (process.env.VERCEL) {
+    throw new Error('Stockfish cannot run on Vercel serverless environment. Please deploy to Railway, Heroku, or DigitalOcean for full functionality.');
+  }
+
   const platform = process.platform;
-    
-      // Default Linux path (for GitHub Codespace)
-        const linuxPath = path.join(__dirname, '../stockfish/stockfish-ubuntu');
+  
+  // Default Linux path (for GitHub Codespace)
+  const linuxPath = path.join(__dirname, '../stockfish/stockfish-ubuntu');
+  
+  // For Android (Termux)
+  const androidPath = path.join(__dirname, '../stockfish/stockfish-android');
+  
+  if (platform === 'linux') {
+    // Check if stockfish exists
+    if (fs.existsSync(linuxPath)) {
+      return linuxPath;
+    }
+    throw new Error('Stockfish not found. Run: npm run setup');
+  } else if (platform === 'android') {
+    if (fs.existsSync(androidPath)) {
+      return androidPath;
+    }
+    // Fallback to Linux version on Android if available
+    if (fs.existsSync(linuxPath)) {
+      return linuxPath;
+    }
+    throw new Error('Stockfish not found for Android');
+  } else {
+    throw new Error(`Unsupported platform: ${platform}. Only Linux and Android are supported.`);
+  }
+}
+
+// Stockfish simulation for Vercel (fallback)
+function simulateStockfishAnalysis(fen, depth = 15) {
+  return new Promise((resolve) => {
+    // Simulate analysis delay
+    setTimeout(() => {
+      const moves = ['e2e4', 'd2d4', 'g1f3', 'c2c4', 'e2e3'];
+      const randomMove = moves[Math.floor(Math.random() * moves.length)];
+      
+      resolve({
+        bestMove: randomMove,
+        evaluation: {
+          type: 'cp',
+          value: Math.floor(Math.random() * 100) - 50,
+          depth: depth
+        },
+        fen: fen,
+        depth: depth,
+        success: true,
+        note: 'SIMULATED RESPONSE - Stockfish not available on Vercel'
+      });
+    }, 1000);
+  });
+}
+
+// Stockfish communication function
+function getStockfishAnalysis(fen, depth = 15, movetime = 5000) {
+  // Jika di Vercel, gunakan simulasi
+  if (process.env.VERCEL) {
+    return simulateStockfishAnalysis(fen, depth);
+  }
+
+  return new Promise((resolve, reject) => {
+    try {
+      const stockfishPath = getStockfishPath();
+      const stockfish = spawn(stockfishPath);
+      
+      let output = '';
+      let bestMove = '';
+      let evaluation = {};
+      let lines = [];
+
+      stockfish.stdin.write('uci\n');
+      
+      // Set up Stockfish with optimal settings
+      stockfish.stdin.write('setoption name Threads value 2\n');
+      stockfish.stdin.write('setoption name Hash value 256\n');
+      
+      // Set position
+      stockfish.stdin.write(`position fen ${fen}\n`);
+      
+      // Go with both depth and movetime
+      stockfish.stdin.write(`go depth ${depth} movetime ${movetime}\n`);
+
+      stockfish.stdout.on('data', (data) => {
+        const newData = data.toString();
+        output += newData;
+        
+        const dataLines = newData.split('\n');
+        
+        dataLines.forEach(line => {
+          if (line.startsWith('bestmove')) {
+            const parts = line.split(' ');
+            bestMove = parts[1];
+            if (bestMove === '(none)') bestMove = null;
+          }
           
-            // For Android (Termux)
-              const androidPath = path.join(__dirname, '../stockfish/stockfish-android');
+          if (line.startsWith('info')) {
+            // Extract evaluation info
+            if (line.includes('score cp') || line.includes('score mate')) {
+              const scoreMatch = line.match(/score (cp|mate) ([-\d]+)/);
+              const depthMatch = line.match(/depth (\d+)/);
+              const pvMatch = line.match(/pv (.+)$/);
+              
+              if (scoreMatch && depthMatch) {
+                evaluation = {
+                  type: scoreMatch[1],
+                  value: parseInt(scoreMatch[2]),
+                  depth: parseInt(depthMatch[1]),
+                  pv: pvMatch ? pvMatch[1].split(' ') : []
+                };
                 
-                  if (platform === 'linux') {
-                      // Check if stockfish exists
-                          if (fs.existsSync(linuxPath)) {
-                                return linuxPath;
-                                    }
-                                        throw new Error('Stockfish not found. Run: npm run setup');
-                                          } else if (platform === 'android') {
-                                              if (fs.existsSync(androidPath)) {
-                                                    return androidPath;
-                                                        }
-                                                            // Fallback to Linux version on Android if available
-                                                                if (fs.existsSync(linuxPath)) {
-                                                                      return linuxPath;
-                                                                          }
-                                                                              throw new Error('Stockfish not found for Android');
-                                                                                } else {
-                                                                                    throw new Error(`Unsupported platform: ${platform}. Only Linux and Android are supported.`);
-                                                                                      }
-                                                                                      }
+                lines.push({
+                  depth: evaluation.depth,
+                  evaluation: evaluation,
+                  raw: line
+                });
+              }
+            }
+          }
+        });
+      });
 
-                                                                                      // Stockfish communication function
-                                                                                      function getStockfishAnalysis(fen, depth = 15, movetime = 5000) {
-                                                                                        return new Promise((resolve, reject) => {
-                                                                                            try {
-                                                                                                  const stockfishPath = getStockfishPath();
-                                                                                                        const stockfish = spawn(stockfishPath);
-                                                                                                              
-                                                                                                                    let output = '';
-                                                                                                                          let bestMove = '';
-                                                                                                                                let evaluation = {};
-                                                                                                                                      let lines = [];
+      stockfish.stderr.on('data', (data) => {
+        console.error('Stockfish stderr:', data.toString());
+      });
 
-                                                                                                                                            stockfish.stdin.write('uci\n');
-                                                                                                                                                  
-                                                                                                                                                        // Set up Stockfish with optimal settings
-                                                                                                                                                              stockfish.stdin.write('setoption name Threads value 2\n');
-                                                                                                                                                                    stockfish.stdin.write('setoption name Hash value 256\n');
-                                                                                                                                                                          
-                                                                                                                                                                                // Set position
-                                                                                                                                                                                      stockfish.stdin.write(`position fen ${fen}\n`);
-                                                                                                                                                                                            
-                                                                                                                                                                                                  // Go with both depth and movetime
-                                                                                                                                                                                                        stockfish.stdin.write(`go depth ${depth} movetime ${movetime}\n`);
+      stockfish.on('close', (code) => {
+        if (code === 0 || bestMove) {
+          resolve({
+            bestMove: bestMove,
+            evaluation: evaluation,
+            analysis: lines,
+            fen: fen,
+            depth: depth,
+            movetime: movetime,
+            success: true
+          });
+        } else {
+          reject(new Error(`Stockfish process exited with code ${code}`));
+        }
+      });
 
-                                                                                                                                                                                                              stockfish.stdout.on('data', (data) => {
-                                                                                                                                                                                                                      const newData = data.toString();
-                                                                                                                                                                                                                              output += newData;
-                                                                                                                                                                                                                                      
-                                                                                                                                                                                                                                              const dataLines = newData.split('\n');
-                                                                                                                                                                                                                                                      
-                                                                                                                                                                                                                                                              dataLines.forEach(line => {
-                                                                                                                                                                                                                                                                        if (line.startsWith('bestmove')) {
-                                                                                                                                                                                                                                                                                    const parts = line.split(' ');
-                                                                                                                                                                                                                                                                                                bestMove = parts[1];
-                                                                                                                                                                                                                                                                                                            if (bestMove === '(none)') bestMove = null;
-                                                                                                                                                                                                                                                                                                                      }
-                                                                                                                                                                                                                                                                                                                                
-                                                                                                                                                                                                                                                                                                                                          if (line.startsWith('info')) {
-                                                                                                                                                                                                                                                                                                                                                      // Extract evaluation info
-                                                                                                                                                                                                                                                                                                                                                                  if (line.includes('score cp') || line.includes('score mate')) {
-                                                                                                                                                                                                                                                                                                                                                                                const scoreMatch = line.match(/score (cp|mate) ([-\d]+)/);
-                                                                                                                                                                                                                                                                                                                                                                                              const depthMatch = line.match(/depth (\d+)/);
-                                                                                                                                                                                                                                                                                                                                                                                                            const pvMatch = line.match(/pv (.+)$/);
-                                                                                                                                                                                                                                                                                                                                                                                                                          
-                                                                                                                                                                                                                                                                                                                                                                                                                                        if (scoreMatch && depthMatch) {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        evaluation = {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                          type: scoreMatch[1],
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            value: parseInt(scoreMatch[2]),
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              depth: parseInt(depthMatch[1]),
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                pv: pvMatch ? pvMatch[1].split(' ') : []
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                };
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                lines.push({
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  depth: evaluation.depth,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    evaluation: evaluation,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      raw: line
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      });
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  });
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        });
+      stockfish.on('error', (error) => {
+        reject(new Error(`Failed to start Stockfish: ${error.message}. Path: ${stockfishPath}`));
+      });
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              stockfish.stderr.on('data', (data) => {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      console.error('Stockfish stderr:', data.toString());
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            });
+      // Timeout safety
+      setTimeout(() => {
+        try {
+          stockfish.kill();
+          // Even if timeout, return whatever we have
+          if (bestMove) {
+            resolve({
+              bestMove: bestMove,
+              evaluation: evaluation,
+              analysis: lines,
+              fen: fen,
+              depth: depth,
+              movetime: movetime,
+              success: true,
+              note: 'Analysis terminated by timeout'
+            });
+          } else {
+            reject(new Error('Stockfish analysis timeout'));
+          }
+        } catch (e) {
+          reject(new Error('Timeout handling failed'));
+        }
+      }, movetime + 1000);
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  stockfish.on('close', (code) => {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          if (code === 0 || bestMove) {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    resolve({
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                bestMove: bestMove,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            evaluation: evaluation,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        analysis: lines,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    fen: fen,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                depth: depth,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            movetime: movetime,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        success: true
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  });
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          } else {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    reject(new Error(`Stockfish process exited with code ${code}`));
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        stockfish.on('error', (error) => {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                reject(new Error(`Failed to start Stockfish: ${error.message}. Path: ${stockfishPath}`));
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      });
+// Routes
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            // Timeout safety
+// Get engine info
+router.get('/info', (req, res) => {
+  try {
+    if (process.env.VERCEL) {
+      return res.json({
+        engine: 'Stockfish (Simulated)',
+        platform: 'Vercel Serverless',
+        status: 'simulated',
+        note: 'Stockfish cannot run on Vercel. Deploy to Railway/Heroku for real analysis.',
+        endpoints: {
+          bestMove: 'POST /api/chess/bestmove',
+          analyze: 'POST /api/chess/analyze'
+        }
+      });
+    }
+
+    const stockfishPath = getStockfishPath();
+    const platform = process.platform;
+    const arch = process.arch;
+    
+    res.json({
+      engine: 'Stockfish',
+      platform: platform,
+      architecture: arch,
+      path: stockfishPath,
+      exists: fs.existsSync(stockfishPath),
+      status: 'ready',
+      endpoints: {
+        bestMove: 'POST /api/chess/bestmove',
+        analyze: 'POST /api/chess/analyze'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Engine not available',
+      message: error.message,
+      solution: 'Run: npm run setup'
+    });
+  }
+});
+
+// Get best move for a position
+router.post('/bestmove', async (req, res, next) => {
+  try {
+    const { fen, depth = 15, movetime = 5000 } = req.body;
+    
+    if (!fen) {
+      return res.status(400).json({ 
+        error: 'FEN position is required',
+        example: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
+      });
+    }
+
+    console.log(`🔍 Analyzing position: ${fen.substring(0, 50)}...`);
+    const startTime = Date.now();
+    
+    const analysis = await getStockfishAnalysis(fen, depth, movetime);
+    const elapsed = Date.now() - startTime;
+    
+    res.json({
+      success: true,
+      bestMove: analysis.bestMove,
+      evaluation: analysis.evaluation,
+      fen: analysis.fen,
+      depth: analysis.depth,
+      movetime: analysis.movetime,
+      actualTime: elapsed,
+      note: analysis.note,
+      environment: process.env.VERCEL ? 'vercel-simulated' : 'production'
+    });
+    
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Get detailed analysis
+router.post('/analyze', async (req, res, next) => {
+  try {
+    const { fen, depth = 15, movetime = 5000 } = req.body;
+    
+    if (!fen) {
+      return res.status(400).json({ 
+        error: 'FEN position is required',
+        example: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
+      });
+    }
+
+    console.log(`🔍 Detailed analysis for: ${fen.substring(0, 50)}...`);
+    const startTime = Date.now();
+    
+    const analysis = await getStockfishAnalysis(fen, depth, movetime);
+    const elapsed = Date.now() - startTime;
+    
+    res.json({
+      success: true,
+      bestMove: analysis.bestMove,
+      evaluation: analysis.evaluation,
+      analysis: analysis.analysis,
+      fen: analysis.fen,
+      depth: analysis.depth,
+      movetime: analysis.movetime,
+      actualTime: elapsed,
+      note: analysis.note,
+      environment: process.env.VERCEL ? 'vercel-simulated' : 'production'
+    });
+    
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Test position with initial setup
+router.get('/test', async (req, res, next) => {
+  try {
+    const testFEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    
+    const analysis = await getStockfishAnalysis(testFEN, 10, 3000);
+    
+    res.json({
+      success: true,
+      message: process.env.VERCEL 
+        ? 'Stockfish simulation is working! (Real Stockfish not available on Vercel)' 
+        : 'Stockfish is working correctly!',
+      testPosition: 'Initial chess position',
+      bestMove: analysis.bestMove,
+      evaluation: analysis.evaluation,
+      status: process.env.VERCEL ? 'simulated' : 'operational',
+      environment: process.env.VERCEL ? 'vercel' : 'production'
+    });
+    
+  } catch (error) {
+    next(error);
+  }
+});
+
+module.exports = router;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        // Timeout safety
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   setTimeout(() => {
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           try {
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     stockfish.kill();
